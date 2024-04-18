@@ -1,0 +1,122 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AWS CloudFormation template to create an AWS Lambda function with URL request capabilities, using Python 3.10 and a custom Lambda Layer, and an IAM user with access keys.'
+
+Parameters:
+  LayerBucketName:
+    Type: String
+    Description: The name of the S3 bucket containing the Lambda Layer zip.
+  LayerZipKey:
+    Type: String
+    Description: The S3 key for the Lambda Layer zip file.
+
+Resources:
+  RequestsLayer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      LayerName: 'requests-layer'
+      Description: 'Layer containing the requests library'
+      Content:
+        S3Bucket: !Ref LayerBucketName
+        S3Key: !Ref LayerZipKey
+      CompatibleRuntimes:
+        - python3.10
+
+  LambdaExecutionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Principal:
+              Service: 'lambda.amazonaws.com'
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: 'lambda-logging-policy'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: 'Allow'
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: 'arn:aws:logs:*:*:*'
+
+  LambdaUser:
+    Type: 'AWS::IAM::User'
+    Properties:
+      UserName: 'lambda-access-user'
+
+  UserAccessKey:
+    Type: 'AWS::IAM::AccessKey'
+    Properties:
+      UserName: !Ref LambdaUser
+
+  LambdaPolicyAttachment:
+    Type: 'AWS::IAM::ManagedPolicyAttachment'
+    Properties:
+      PolicyArn: 'arn:aws:iam::aws:policy/AWSLambda_FullAccess'
+      Target: !Ref LambdaUser
+
+  UrlRequestLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: 'UrlRequestLambda'
+      Handler: "index.lambda_handler"
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: 'python3.10'
+      Code:
+        ZipFile: |
+          import json
+          import requests
+          def lambda_handler(event, context):
+              if 'url' not in event:
+                  return {
+                      'statusCode': 400,
+                      'body': json.dumps({'error': "Missing 'url' in JSON payload"}),
+                      'headers': {'Content-Type': 'application/json'}
+                  }
+              url = event['url']
+              headers = {
+                  'content-type': 'application/json',
+                  'accept': '*/*',
+                  'sec-fetch-site': 'same-origin',
+                  'accept-language': 'en-US,en;q=0.9',
+                  'sec-fetch-mode': 'cors',
+                  'origin': 'https://google.com',
+                  'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.4 Mobile/15E148 Safari/604.1',
+                  'referer': 'https://google.com/',
+                  'sec-fetch-dest': 'empty',
+              }
+              try:
+                  response = requests.get(url, headers=headers)
+                  if response.status_code == 200:
+                      print("Request was successful.")
+                      return {'statusCode': 200, 'body': response.text, 'headers': {'Content-Type': 'application/json'}}
+                  else:
+                      print(f"Request failed with status code: {response.status_code}")
+                      return {'statusCode': response.status_code, 'body': response.text, 'headers': {'Content-Type': 'application/json'}}
+              except Exception as e:
+                  print(f"Error occurred while making HTTP request: {e}")
+                  return {'statusCode': 500, 'body': json.dumps({'error': 'Failed to make HTTP request'}), 'headers': {'Content-Type': 'application/json'}}
+      Layers:
+        - !Ref RequestsLayer
+      Timeout: 30  # Optional: Adjust the timeout as needed.
+
+Outputs:
+  LambdaFunctionName:
+    Description: 'Name of the Lambda function'
+    Value: !Ref UrlRequestLambdaFunction
+  LambdaFunctionArn:
+    Description: 'ARN of the Lambda function'
+    Value: !GetAtt UrlRequestLambdaFunction.Arn
+  IAMUserName:
+    Description: 'IAM User Name for Lambda Access'
+    Value: !Ref LambdaUser
+  IAMUserAccessKeyId:
+    Description: 'Access Key ID for the IAM User'
+    Value: !Ref UserAccessKey
+  IAMUserSecretAccessKey:
+    Description: 'Secret Access Key for the IAM User'
+    Value: !GetAtt UserAccessKey.SecretAccessKey
